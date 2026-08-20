@@ -13,6 +13,6 @@ dist/
 .eggs/
 debug/
 *.bin
-log_file_test_01.bin
+data/
 *.csv
-log_file_test_01.bin
+cmavparser.egg-info

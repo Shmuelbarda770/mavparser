@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mavparser"
+dynamic = ["version"]
+description = "Fast ArduPilot DataFlash BIN parser"
+readme = "PYPI_README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{name = "Shmuel Barda"}]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pymavlink==2.4.42"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["mavparser*"]
+
+
+[tool.setuptools_scm]
+version_scheme = "release-branch-semver"
+local_scheme = "no-local-version"
+tag_regex = "^v(?P<version>.*)$"
