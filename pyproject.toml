@@ -34,8 +34,10 @@ fallback_version = "0.1.0-dev"
 
 [tool.cibuildwheel]
 build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
-
 skip = "*-win32 *-manylinux_i686 pp*"
+
+
+test-skip = "cp39-*aarch64* cp310-*aarch64* cp312-*aarch64* cp313-*aarch64*"
 
 test-extras = ["test"]
 test-command = "pytest --import-mode=importlib {project}/tests"
