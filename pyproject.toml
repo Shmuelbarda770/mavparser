@@ -9,9 +9,9 @@ build-backend = "setuptools.build_meta"
 name = "mavparser"
 dynamic = ["version"]
 description = "Fast ArduPilot DataFlash BIN parser"
-readme = "PYPI_README.md"
+readme = "PYPI_README.md" 
 requires-python = ">=3.9"
-license = "MIT"
+license = { text = "MIT" }
 authors = [{ name = "Shmuel Barda" }]
 
 [project.optional-dependencies]
@@ -34,7 +34,6 @@ tag_regex = "^v(?P<version>.*)$"
 [tool.cibuildwheel]
 build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
 skip = "*-win32 *-manylinux_i686 pp*"
-
 
 test-skip = "cp39-*aarch64* cp310-*aarch64* cp312-*aarch64* cp313-*aarch64*"
 
