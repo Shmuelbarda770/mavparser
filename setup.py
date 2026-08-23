@@ -1,4 +1,3 @@
-"""Build configuration for the CPython extension module."""
 
 import sys
 from setuptools import Extension, setup
