@@ -13,6 +13,7 @@ dist/
 .eggs/
 debug/
 *.bin
-data/
+data/*
+!data/00000081.BIN
 *.csv
 cmavparser.egg-info
