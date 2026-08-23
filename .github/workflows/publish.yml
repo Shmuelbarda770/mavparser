@@ -23,6 +23,7 @@ jobs:
       - name: Build wheels via cibuildwheel
         uses: pypa/cibuildwheel@v2.21.0
         env:
+          CIBW_BUILD_VERBOSITY: 3
           CIBW_ARCHS_LINUX: x86_64 aarch64
           CIBW_TEST_SKIP: "*aarch64 *"
           CIBW_BEFORE_TEST: pip install pytest pymavlink
