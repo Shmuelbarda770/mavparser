@@ -12,7 +12,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-13 = Intel (x86_64), macos-14 / macos-latest = Apple Silicon (arm64)
         os: [ubuntu-latest, windows-latest, macos-13, macos-latest]
 
     steps:
@@ -23,9 +22,11 @@ jobs:
 
       - name: Build wheels via cibuildwheel
         uses: pypa/cibuildwheel@v2.21.0
-        # הגדרות אופציונליות ניתן להגדיר דרך pyproject.toml או env כאן:
-        # env:
-        #   CIBW_SKIP: "cp36-* cp37-* pp*"
+        env:
+          CIBW_ARCHS_LINUX: x86_64 aarch64
+          CIBW_TEST_SKIP: "*aarch64 *"
+          CIBW_BEFORE_TEST: pip install pytest pymavlink
+          CIBW_TEST_COMMAND: pytest {project}/tests
 
       - name: Upload wheels as artifact
         uses: actions/upload-artifact@v4
