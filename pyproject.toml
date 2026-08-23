@@ -30,3 +30,18 @@ include = ["mavparser*"]
 version_scheme = "release-branch-semver"
 local_scheme = "no-local-version"
 tag_regex = "^v(?P<version>.*)$"
+
+
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-* cp313-*"
+
+skip = "*-win32 *-manylinux_i686 pp*"
+
+test-extras = ["test"]
+test-command = "pytest {project}/tests"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
