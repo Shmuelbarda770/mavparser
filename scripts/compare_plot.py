@@ -3,9 +3,9 @@ import time
 import cv2
 import numpy as np
 
-LOG_FILE = "data/log_file_test_01.BIN"
-if not os.path.exists(LOG_FILE) and os.path.exists("data/log_file_test_01.bin"):
-    LOG_FILE = "data/log_file_test_01.bin"
+LOG_FILE = "data/00000081.BIN.BIN"
+if not os.path.exists(LOG_FILE) and os.path.exists("data/00000081.BIN.bin"):
+    LOG_FILE = "data/00000081.BIN.bin"
 
 
 def run_pymavlog():
