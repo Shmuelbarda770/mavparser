@@ -14,13 +14,24 @@
 #define MAX_NAME 5
 #define MAX_FORMAT 17
 
+typedef enum {
+    FMT_I8, FMT_U8, FMT_I16, FMT_U16, FMT_I32, FMT_U32,
+    FMT_I64, FMT_U64, FMT_CENTI_I16, FMT_CENTI_U16,
+    FMT_CENTI_I32, FMT_CENTI_U32, FMT_DEG_I32, FMT_FLOAT, FMT_DOUBLE,
+    FMT_STR4, FMT_STR16, FMT_BYTES64, FMT_STR64, FMT_ARRAY32, FMT_UNKNOWN
+} FieldType;
+
+typedef struct {
+    FieldType type;
+    uint16_t offset;
+    PyObject *py_key;
+} FieldSpec;
+
 typedef struct {
     char name[MAX_NAME];
     char format[MAX_FORMAT];
-    char columns[MAX_COLUMNS][32];
-    PyObject *py_name;                            /* Cached PyUnicode message name */
-    PyObject *py_columns[MAX_COLUMNS];            /* Pre-interned PyUnicode field keys */
-    uint8_t is_z_data[MAX_COLUMNS];               /* Pre-computed flag for Z field 'Data' */
+    PyObject *py_name;
+    FieldSpec fields[MAX_COLUMNS];
     unsigned char column_count;
     size_t payload_size;
     int defined;
@@ -53,27 +64,29 @@ static inline int64_t read_i64(const unsigned char *v) { int64_t r; memcpy(&r, v
 static inline float read_f32(const unsigned char *v) { float r; memcpy(&r, v, 4); return r; }
 static inline double read_f64(const unsigned char *v) { double r; memcpy(&r, v, 8); return r; }
 
-static size_t field_size(char code) {
+static inline FieldType get_field_info(char code, size_t *out_size, int is_z_data) {
     switch (code) {
-        case 'b': case 'B': case 'M': return 1;
-        case 'h': case 'H': case 'c': case 'C': return 2;
-        case 'i': case 'I': case 'f': case 'e': case 'E': case 'L': return 4;
-        case 'd': case 'q': case 'Q': return 8;
-        case 'n': return 4;
-        case 'N': return 16;
-        case 'Z': case 'a': return 64;
-        default: return 0;
+        case 'b': *out_size = 1; return FMT_I8;
+        case 'B': case 'M': *out_size = 1; return FMT_U8;
+        case 'h': *out_size = 2; return FMT_I16;
+        case 'H': *out_size = 2; return FMT_U16;
+        case 'i': *out_size = 4; return FMT_I32;
+        case 'I': *out_size = 4; return FMT_U32;
+        case 'q': *out_size = 8; return FMT_I64;
+        case 'Q': *out_size = 8; return FMT_U64;
+        case 'c': *out_size = 2; return FMT_CENTI_I16;
+        case 'C': *out_size = 2; return FMT_CENTI_U16;
+        case 'e': *out_size = 4; return FMT_CENTI_I32;
+        case 'E': *out_size = 4; return FMT_CENTI_U32;
+        case 'L': *out_size = 4; return FMT_DEG_I32;
+        case 'f': *out_size = 4; return FMT_FLOAT;
+        case 'd': *out_size = 8; return FMT_DOUBLE;
+        case 'n': *out_size = 4; return FMT_STR4;
+        case 'N': *out_size = 16; return FMT_STR16;
+        case 'Z': *out_size = 64; return is_z_data ? FMT_BYTES64 : FMT_STR64;
+        case 'a': *out_size = 64; return FMT_ARRAY32;
+        default: *out_size = 0; return FMT_UNKNOWN;
     }
-}
-
-static size_t format_payload_size(const char *format) {
-    size_t size = 0;
-    for (; *format; ++format) {
-        size_t current_size = field_size(*format);
-        if (current_size == 0) return 0;
-        size += current_size;
-    }
-    return size;
 }
 
 static inline PyObject *decode_text(const unsigned char *value, size_t length) {
@@ -87,8 +100,8 @@ static void free_format_definition(FormatDefinition *definition) {
         Py_XDECREF(definition->py_name);
         definition->py_name = NULL;
         for (unsigned char i = 0; i < definition->column_count; ++i) {
-            Py_XDECREF(definition->py_columns[i]);
-            definition->py_columns[i] = NULL;
+            Py_XDECREF(definition->fields[i].py_key);
+            definition->fields[i].py_key = NULL;
         }
         definition->defined = 0;
     }
@@ -106,93 +119,127 @@ static int parse_format_definition(MessageIterator *iterator, const unsigned cha
     definition->name[4] = '\0';
     memcpy(definition->format, payload + 6, 16);
     definition->format[16] = '\0';
-    definition->payload_size = format_payload_size(definition->format);
 
     definition->py_name = PyUnicode_InternFromString(definition->name);
 
+    /* Parse columns string */
     char labels[65];
     memcpy(labels, payload + 22, 64);
     labels[64] = '\0';
+    
     char *cursor = labels;
-    while (*cursor && definition->column_count < MAX_COLUMNS) {
+    unsigned char col_idx = 0;
+    
+    while (*cursor && col_idx < MAX_COLUMNS) {
         char *next = strchr(cursor, ',');
         if (next) *next = '\0';
         while (*cursor == ' ') ++cursor;
-        size_t label_length = strnlen(cursor, sizeof(definition->columns[0]) - 1);
-        memcpy(definition->columns[definition->column_count], cursor, label_length);
-        definition->columns[definition->column_count][label_length] = '\0';
         
-        definition->is_z_data[definition->column_count] = (strcmp(definition->columns[definition->column_count], "Data") == 0);
-        definition->py_columns[definition->column_count] = PyUnicode_InternFromString(definition->columns[definition->column_count]);
-
-        ++definition->column_count;
+        char col_buf[32];
+        size_t label_length = strnlen(cursor, sizeof(col_buf) - 1);
+        memcpy(col_buf, cursor, label_length);
+        col_buf[label_length] = '\0';
+        
+        definition->fields[col_idx].py_key = PyUnicode_InternFromString(col_buf);
+        
+        col_idx++;
         if (!next) break;
         cursor = next + 1;
     }
-    definition->defined = definition->payload_size > 0;
+    definition->column_count = col_idx;
+
+    /* Pre-compile format field offsets and types */
+    uint16_t current_offset = 0;
+    size_t fmt_len = strlen(definition->format);
+    
+    for (size_t i = 0; i < fmt_len && i < definition->column_count; ++i) {
+        size_t size = 0;
+        int is_z_data = 0;
+        
+        /* Check if column key is "Data" for 'Z' type handling */
+        if (definition->format[i] == 'Z') {
+            PyObject *key = definition->fields[i].py_key;
+            if (key && PyUnicode_Check(key)) {
+                const char *k_str = PyUnicode_AsUTF8(key);
+                if (k_str && strcmp(k_str, "Data") == 0) is_z_data = 1;
+            }
+        }
+        
+        FieldType ftype = get_field_info(definition->format[i], &size, is_z_data);
+        if (ftype == FMT_UNKNOWN || size == 0) {
+            definition->defined = 0;
+            return -1;
+        }
+
+        definition->fields[i].type = ftype;
+        definition->fields[i].offset = current_offset;
+        current_offset += (uint16_t)size;
+    }
+    
+    definition->payload_size = current_offset;
+    definition->defined = (definition->payload_size > 0);
     return definition->defined ? 0 : -1;
 }
 
-static inline PyObject *decode_field(char code, const unsigned char *value) {
-    switch (code) {
-        case 'b': return PyLong_FromLong((int8_t)value[0]);
-        case 'B': case 'M': return PyLong_FromUnsignedLong(value[0]);
-        case 'h': return PyLong_FromLong(read_i16(value));
-        case 'H': return PyLong_FromUnsignedLong(read_u16(value));
-        case 'i': return PyLong_FromLong(read_i32(value));
-        case 'I': return PyLong_FromUnsignedLong(read_u32(value));
-        case 'q': return PyLong_FromLongLong(read_i64(value));
-        case 'Q': return PyLong_FromUnsignedLongLong(read_u64(value));
-        case 'c': return PyFloat_FromDouble((double)read_i16(value) * 0.01);
-        case 'C': return PyFloat_FromDouble((double)read_u16(value) * 0.01);
-        case 'e': return PyFloat_FromDouble((double)read_i32(value) * 0.01);
-        case 'E': return PyFloat_FromDouble((double)read_u32(value) * 0.01);
-        case 'L': return PyFloat_FromDouble((double)read_i32(value) * 0.0000001);
-        case 'f': return PyFloat_FromDouble((double)read_f32(value));
-        case 'd': return PyFloat_FromDouble(read_f64(value));
-        case 'n': return decode_text(value, 4);
-        case 'N': return decode_text(value, 16);
-        case 'Z': return PyBytes_FromStringAndSize((const char *)value, 64);
-        case 'a': {
+static inline PyObject *decode_field_fast(FieldType type, const unsigned char *value) {
+    switch (type) {
+        case FMT_I8:         return PyLong_FromLong((int8_t)value[0]);
+        case FMT_U8:         return PyLong_FromUnsignedLong(value[0]);
+        case FMT_I16:        return PyLong_FromLong(read_i16(value));
+        case FMT_U16:        return PyLong_FromUnsignedLong(read_u16(value));
+        case FMT_I32:        return PyLong_FromLong(read_i32(value));
+        case FMT_U32:        return PyLong_FromUnsignedLong(read_u32(value));
+        case FMT_I64:        return PyLong_FromLongLong(read_i64(value));
+        case FMT_U64:        return PyLong_FromUnsignedLongLong(read_u64(value));
+        case FMT_CENTI_I16: return PyFloat_FromDouble((double)read_i16(value) * 0.01);
+        case FMT_CENTI_U16: return PyFloat_FromDouble((double)read_u16(value) * 0.01);
+        case FMT_CENTI_I32: return PyFloat_FromDouble((double)read_i32(value) * 0.01);
+        case FMT_CENTI_U32: return PyFloat_FromDouble((double)read_u32(value) * 0.01);
+        case FMT_DEG_I32:   return PyFloat_FromDouble((double)read_i32(value) * 0.0000001);
+        case FMT_FLOAT:     return PyFloat_FromDouble((double)read_f32(value));
+        case FMT_DOUBLE:    return PyFloat_FromDouble(read_f64(value));
+        case FMT_STR4:      return decode_text(value, 4);
+        case FMT_STR16:     return decode_text(value, 16);
+        case FMT_STR64:     return decode_text(value, 64);
+        case FMT_BYTES64:   return PyBytes_FromStringAndSize((const char *)value, 64);
+        case FMT_ARRAY32: {
             PyObject *items = PyList_New(32);
-            if (items == NULL) return NULL;
+            if (!items) return NULL;
             for (Py_ssize_t index = 0; index < 32; ++index) {
                 PyObject *item = PyLong_FromLong(read_i16(value + index * 2));
-                if (item == NULL) { Py_DECREF(items); return NULL; }
+                if (!item) { Py_DECREF(items); return NULL; }
                 PyList_SET_ITEM(items, index, item);
             }
             return items;
         }
-        default: PyErr_SetString(PyExc_ValueError, "unsupported DataFlash field format"); return NULL;
+        default:
+            PyErr_SetString(PyExc_ValueError, "unsupported field format");
+            return NULL;
     }
 }
 
 static PyObject *decode_data_message(MessageIterator *iterator, unsigned char type, const unsigned char *packet) {
     FormatDefinition *definition = &iterator->formats[type];
-    PyObject *message = PyDict_New();
+    
+    /* Pre-sized dict allocation to avoid hash-table resizes */
+    PyObject *message = _PyDict_NewPresized(definition->column_count + 1);
     if (!message) return NULL;
 
     if (PyDict_SetItem(message, iterator->py_mavpackettype_key, definition->py_name) < 0) goto failed;
 
-    const unsigned char *value = packet + 3;
-    for (size_t index = 0; definition->format[index] != '\0'; ++index) {
-        char fmt_code = definition->format[index];
-        size_t size = field_size(fmt_code);
-        
-        PyObject *decoded = (fmt_code == 'Z' && !definition->is_z_data[index])
-            ? decode_text(value, 64)
-            : decode_field(fmt_code, value);
+    const unsigned char *payload = packet + 3;
+    unsigned char count = definition->column_count;
 
-        if (decoded == NULL) goto failed;
+    for (unsigned char i = 0; i < count; ++i) {
+        FieldSpec *spec = &definition->fields[i];
+        PyObject *decoded = decode_field_fast(spec->type, payload + spec->offset);
+        if (!decoded) goto failed;
 
-        if (index < definition->column_count && definition->py_columns[index] != NULL) {
-            if (PyDict_SetItem(message, definition->py_columns[index], decoded) < 0) {
-                Py_DECREF(decoded);
-                goto failed;
-            }
+        if (PyDict_SetItem(message, spec->py_key, decoded) < 0) {
+            Py_DECREF(decoded);
+            goto failed;
         }
         Py_DECREF(decoded);
-        value += size;
     }
     return message;
 
@@ -208,7 +255,7 @@ static PyObject *decode_fmt_message(MessageIterator *iterator, const unsigned ch
         return NULL;
     }
     FormatDefinition *definition = &iterator->formats[payload[0]];
-    PyObject *message = PyDict_New();
+    PyObject *message = _PyDict_NewPresized(7);
     if (!message) return NULL;
 
     PyObject *type = PyLong_FromUnsignedLong(payload[0]);
@@ -232,18 +279,33 @@ failed:
     return NULL;
 }
 
-static PyObject *MessageIterator_next(MessageIterator *iterator) {
-    while (iterator->offset + 3 <= iterator->data_size) {
-        size_t found = iterator->offset;
-        while (found + 3 <= iterator->data_size &&
-               !(iterator->data[found] == 0xA3 && iterator->data[found + 1] == 0x95)) ++found;
-        if (found + 3 > iterator->data_size) break;
+/* Fast sync bytes finding using libc memchr (SIMD accelerated) */
+static inline size_t find_next_sync(const unsigned char *data, size_t offset, size_t data_size) {
+    while (offset + 3 <= data_size) {
+        const unsigned char *ptr = (const unsigned char *)memchr(data + offset, 0xA3, data_size - offset - 1);
+        if (!ptr) return data_size;
+        
+        size_t found = ptr - data;
+        if (data[found + 1] == 0x95) return found;
+        
+        offset = found + 1;
+    }
+    return data_size;
+}
 
-        unsigned char type = iterator->data[found + 2];
+static PyObject *MessageIterator_next(MessageIterator *iterator) {
+    const unsigned char *data = iterator->data;
+    size_t data_size = iterator->data_size;
+
+    while (iterator->offset + 3 <= data_size) {
+        size_t found = find_next_sync(data, iterator->offset, data_size);
+        if (found + 3 > data_size) break;
+
+        unsigned char type = data[found + 2];
         if (type == 0x80) {
-            if (found + 89 > iterator->data_size) break;
+            if (found + 89 > data_size) break;
             iterator->offset = found + 89;
-            PyObject *format_message = decode_fmt_message(iterator, iterator->data + found);
+            PyObject *format_message = decode_fmt_message(iterator, data + found);
             if (format_message != NULL) return format_message;
             PyErr_Clear();
             iterator->offset = found + 1;
@@ -251,12 +313,12 @@ static PyObject *MessageIterator_next(MessageIterator *iterator) {
         }
 
         FormatDefinition *definition = &iterator->formats[type];
-        if (!definition->defined || found + 3 + definition->payload_size > iterator->data_size) {
+        if (!definition->defined || found + 3 + definition->payload_size > data_size) {
             iterator->offset = found + 1;
             continue;
         }
         iterator->offset = found + 3 + definition->payload_size;
-        return decode_data_message(iterator, type, iterator->data + found);
+        return decode_data_message(iterator, type, data + found);
     }
     PyErr_SetNone(PyExc_StopIteration);
     return NULL;
@@ -313,7 +375,7 @@ static PyObject *new_iterator_from_path(const char *path) {
 
     iterator->data_size = (size_t)length;
     iterator->data = PyMem_Malloc(iterator->data_size ? iterator->data_size : 1);
-    if (!iterator->data || fread(iterator->data, 1, iterator->data_size, file) != iterator->data_size) {
+    if (!iterator->data || (iterator->data_size > 0 && fread(iterator->data, 1, iterator->data_size, file) != iterator->data_size)) {
         fclose(file); Py_DECREF(iterator); PyErr_SetString(PyExc_OSError, "failed to read BIN log"); return NULL;
     }
     fclose(file);
